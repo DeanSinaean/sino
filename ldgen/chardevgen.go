@@ -6,6 +6,7 @@ func main() {
 	var g chardevgen
 	g.setName("testlllmodule")
 	g.setNDevs("4")
+	g.setBufSize("100")
 
 	os.Mkdir(g.name, 0777)
 
@@ -31,8 +32,13 @@ func main() {
 }
 
 type chardevgen struct {
-	name   string
-	n_devs string
+	name     string
+	n_devs   string
+	buf_size string
+}
+
+func (g *chardevgen) setBufSize(n string) {
+	g.buf_size = n
 }
 
 func (g *chardevgen) setName(name string) {
@@ -44,6 +50,7 @@ func (g *chardevgen) setNDevs(n string) {
 
 func (g *chardevgen) genHeader() string {
 	return `#include <linux/module.h>
+#include <linux/device.h>
 #include <linux/uaccess.h>
 #include <linux/init.h>
 #include <linux/fs.h>
@@ -55,13 +62,16 @@ func (g *chardevgen) genHeader() string {
 func (g *chardevgen) genDefinitions() string {
 	return `
 	// start of definitions
+	#define BUF_SIZE ` + g.buf_size + `
 	struct ` + g.name + `_dev {
-		char * buf;
+		char buf[BUF_SIZE];
 		struct cdev cdev;
 		int buf_size;
+		struct device *devicep;
 	};
 	unsigned int  ` + g.name + `_major;
 	struct ` + g.name + `_dev ` + g.name + `_devs[` + g.n_devs + `];
+	struct class * classp=NULL;
 	// end of definitions
 	`
 }
@@ -222,6 +232,7 @@ func (g *chardevgen) genSetup() string {
 	{
 		int err,devno =MKDEV(` + g.name + `_major,index);
 
+		` + g.name + `_dev->buf_size=BUF_SIZE;
 		cdev_init(&` + g.name + `_dev->cdev,&` + g.name + `_fops);
 		` + g.name + `_dev->cdev.owner = THIS_MODULE;
 		` + g.name + `_dev->cdev.ops = &` + g.name + `_fops;
@@ -252,8 +263,21 @@ func (g *chardevgen) genInit() string {
 		if (result < 0)
 		return result;
 
+		printk("chardev major:%d, number of minors:%d\n",` + g.name + `_major,` + g.n_devs + `);
+
+
 		for(i=0;i<` + g.n_devs + `;i++) {
 			` + g.name + `_setup_cdev(&` + g.name + `_devs[i],0);
+		}
+
+		classp=class_create(THIS_MODULE,"` + g.name + `");
+		if( IS_ERR(classp)) {
+			printk("Error registering class.\n");
+			return -ENOMEM;
+		}
+
+		for(i=0;i<` + g.n_devs + `;i++) {
+			` + g.name + `_devs[i].devicep=device_create(classp,NULL,MKDEV(` + g.name + `_major,i),NULL,"` + g.name + `%d",i);
 		}
 		return 0;
 	}
@@ -265,6 +289,10 @@ func (g *chardevgen) genExit() string {
 	void  __exit ` + g.name + `_exit(void)
 	{
 		int i;
+		for(i=0;i<` + g.n_devs + `;i++) {
+			device_destroy(classp, MKDEV(` + g.name + `_major,i));
+		}
+		class_destroy(classp);
 		for(i=0;i<` + g.n_devs + `;i++) {
 			cdev_del(&` + g.name + `_devs[i].cdev);
 		}
